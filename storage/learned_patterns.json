@@ -1,0 +1,76 @@
+{
+  "patterns": {
+    "f514fb51b36560e2": {
+      "words": [
+        "сколько",
+        "записей",
+        "таблице"
+      ],
+      "template": "SELECT COUNT(*) FROM {table}",
+      "count": 0,
+      "examples": [],
+      "source": "schema_preload",
+      "created_at": "2025-12-22T15:39:10.182835"
+    },
+    "a3157065b19cfb96": {
+      "words": [
+        "значению",
+        "записей",
+        "равно",
+        "поле",
+        "сколько",
+        "где"
+      ],
+      "template": "SELECT COUNT(*) FROM {table} WHERE {field} = {value}",
+      "count": 0,
+      "examples": [],
+      "source": "schema_preload",
+      "created_at": "2025-12-22T15:39:10.182922"
+    },
+    "7883fb45fb294e71": {
+      "words": [
+        "сумма",
+        "поле",
+        "значений"
+      ],
+      "template": "SELECT SUM({field}) FROM {table}",
+      "count": 0,
+      "examples": [],
+      "source": "schema_preload",
+      "created_at": "2025-12-22T15:39:10.182950"
+    },
+    "79eda4312a7928fb": {
+      "words": [
+        "поля",
+        "среднее",
+        "значение"
+      ],
+      "template": "SELECT AVG({field}) FROM {table}",
+      "count": 0,
+      "examples": [],
+      "source": "schema_preload",
+      "created_at": "2025-12-22T15:39:10.182975"
+    },
+    "63d602f99c403719": {
+      "words": [
+        "дням",
+        "статистика"
+      ],
+      "template": "SELECT DATE({date_field}), COUNT(*) FROM {table} GROUP BY DATE({date_field}) ORDER BY DATE({date_field})",
+      "count": 0,
+      "examples": [],
+      "source": "schema_preload",
+      "created_at": "2025-12-22T15:39:10.182999"
+    }
+  },
+  "updated_at": "2025-12-22T15:41:37.015498",
+  "total_patterns": 5,
+  "stats": {
+    "total_queries": 0,
+    "exact_hits": 0,
+    "pattern_hits": 0,
+    "llm_calls": 0,
+    "corrections": 0,
+    "auto_learned": 0
+  }
+}
