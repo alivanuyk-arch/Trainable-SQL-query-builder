@@ -176,6 +176,37 @@ class QueryConstructor:
             'warning': 'Could not generate optimal SQL'
         }
     
+    async def process_and_execute_query(self, query_text: str, user_id: int = None):
+        """
+        Полный цикл: вопрос → SQL → выполнение → результаты
+        """
+        # 1. Генерируем SQL (используем существующий process_query)
+        result = await self.process_query(query_text, user_id)
+        
+        # 2. Если SQL сгенерирован успешно - выполняем
+        if result.get('sql'):
+            try:
+                sql = result['sql']
+                execution_results = await self.db_manager.execute_query(sql)
+                
+                # Добавляем результаты выполнения в ответ
+                result['execution'] = {
+                    'success': True,
+                    'results': execution_results,
+                    'row_count': len(execution_results) if execution_results else 0
+                }
+                
+            except Exception as e:
+                # Ошибка выполнения SQL
+                result['execution'] = {
+                    'success': False,
+                    'error': str(e),
+                    'results': [],
+                    'row_count': 0
+                }
+        
+        return result
+    
     async def learn_from_correction(self, original_query: str, 
                                   llm_sql: str, 
                                   corrected_sql: str,
@@ -553,3 +584,66 @@ class QueryConstructor:
         if patterns_to_remove:
             logger.info(f"Removed {len(patterns_to_remove)} unused patterns")
             self._save_patterns()
+
+    async def process_correction(self, question: str, original_sql: str, 
+                           corrected_sql: str, user_id: int = None) -> str:
+        """
+        Обработка исправления SQL от пользователя
+        Возвращает результат выполнения исправленного SQL
+        """
+        try:
+            self.logger.info(f"Обработка исправления от user_id={user_id}")
+            
+            # 1. Выполняем исправленный SQL
+            result = ""
+            if hasattr(self, 'db') and self.db:
+                try:
+                    result_data = await self.db.execute_query(corrected_sql)
+                    if isinstance(result_data, list):
+                        result = f"Найдено {len(result_data)} записей"
+                    else:
+                        result = str(result_data)
+                except Exception as db_error:
+                    result = f"Ошибка выполнения SQL: {str(db_error)}"
+            else:
+                result = "✅ SQL принят (тестовый режим)"
+            
+            # 2. Если SQL был изменён - учимся
+            if original_sql.strip() != corrected_sql.strip():
+                self.stats['corrections'] += 1
+                self.logger.info(f"SQL изменён, исправлений: {self.stats['corrections']}")
+                
+                # Сохраняем в лог исправлений
+                self.corrections_log.append({
+                    'timestamp': datetime.now().isoformat(),
+                    'user_id': user_id,
+                    'question': question,
+                    'original_sql': original_sql,
+                    'corrected_sql': corrected_sql,
+                    'result': result
+                })
+                
+                # Извлекаем правило из исправления
+                if hasattr(self, '_learn_from_correction'):
+                    success = await self._learn_from_correction(question, original_sql, corrected_sql)
+                    if success:
+                        self.logger.info("Правило успешно извлечено")
+            
+            # 3. Сохраняем исправленную версию в кэш
+            self.exact_cache[question] = corrected_sql
+            
+            # 4. Обновляем статистику
+            self.stats['total_queries'] += 1
+            
+            # 5. Сохраняем все данные
+            self._save_cache()
+            self._save_corrections_log()
+            if hasattr(self, '_save_patterns'):
+                self._save_patterns()
+            
+            self.logger.info(f"Исправление обработано: {original_sql[:30]}... → {corrected_sql[:30]}...")
+            return result
+            
+        except Exception as e:
+            self.logger.error(f"Ошибка обработки исправления: {e}")
+            return f"Ошибка обработки: {str(e)}"

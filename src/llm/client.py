@@ -5,6 +5,7 @@ import logging
 from typing import Optional, Dict, Any, List
 from dataclasses import dataclass
 import asyncio
+from src.llm.prompt_factory import PromptFactory
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +26,7 @@ class LLMClient:
         self.model = config.OLLAMA_MODEL
         self.base_url = config.OLLAMA_BASE_URL
         self.provider = config.LLM_PROVIDER
-        
+
         # Статистика
         self.stats = {
             'total_requests': 0,
@@ -34,10 +35,18 @@ class LLMClient:
             'total_tokens': 0,
             'avg_response_time': 0
         }
-        
-        # Сессия HTTP
-        self.session = None
-        
+
+        # Критическое исправление: создаем сессию ЗДЕСЬ
+        import aiohttp
+        self.session = aiohttp.ClientSession()
+        logger.info(f"HTTP-сессия для {self.provider} создана.")
+
+        # Инициализация prompt factory
+        self.prompt_factory = PromptFactory()
+
+        self.logger = logging.getLogger(__name__)
+        self.logger.info(f"LLMClient initialized for {self.provider}: {self.model}")
+
     async def initialize(self):
         """Инициализация клиента"""
         self.session = aiohttp.ClientSession()
