@@ -110,7 +110,7 @@ class QueryConstructor:
                 }
     
     async def process_query(self, user_query: str, user_id: str = None) -> Dict:
-        """Основной метод обработки запроса"""
+        """ТОЛЬКО кэш и шаблоны, без LLM"""
         self.stats['total_queries'] += 1
         
         logger.info(f"Processing query: '{user_query}'")
@@ -122,7 +122,9 @@ class QueryConstructor:
             return {
                 'sql': self.exact_cache[user_query],
                 'source': 'exact_cache',
-                'needs_validation': False
+                'needs_validation': False,
+                'success': True,
+                'from_cache': True  # SQL из кэша
             }
         
         # 2. Ищем похожий паттерн
@@ -144,36 +146,25 @@ class QueryConstructor:
                 'sql': sql,
                 'source': 'pattern',
                 'needs_validation': True,
+                'success': True,
+                'from_cache': False,
                 'pattern_id': list(self.patterns.keys())[list(self.patterns.values()).index(pattern)]
             }
         
-        # 3. Используем LLM если доступна
-        if self.llm and self.config.LLM_ENABLED:
-            logger.info(f"Using LLM for: '{user_query}'")
-            self.stats['llm_calls'] += 1
-            
-            sql_result = await self.llm.generate_sql(user_query, self.schema)
-            
-            if sql_result and sql_result.get('sql'):
-                sql = sql_result['sql']
-                
-                return {
-                    'sql': sql,
-                    'source': 'llm',
-                    'needs_validation': True,
-                    'confidence': sql_result.get('confidence', 0.5),
-                    'llm_metadata': sql_result.get('metadata', {})
-                }
+        # 3. НЕТ ВЫЗОВА LLM ЗДЕСЬ! УБРАНО!
         
-        # 4. Fallback - простой запрос
-        logger.warning(f"Fallback for query: '{user_query}'")
+        # 4. Fallback - простой запрос (всегда работает)
+        logger.warning(f"No pattern found for query: '{user_query}'")
         fallback_sql = self._generate_fallback_sql(user_query)
         
         return {
             'sql': fallback_sql,
             'source': 'fallback',
             'needs_validation': True,
-            'warning': 'Could not generate optimal SQL'
+            'success': False,  # Fallback = не успех, а запасной вариант
+            'from_cache': False,
+            'warning': 'No matching pattern found',
+            'needs_llm': True  # <-- Бот увидит этот флаг и вызовет LLM
         }
     
     async def process_and_execute_query(self, query_text: str, user_id: int = None):
