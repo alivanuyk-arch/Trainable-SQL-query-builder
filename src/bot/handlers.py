@@ -348,7 +348,8 @@ async def handle_sql_correction(update: Update, context: ContextTypes.DEFAULT_TY
         
         # Получаем сохраненные данные
         question = context.user_data.get('last_question')
-        original_sql = context.user_data.get('last_sql')
+        original_sql = context.user_data.get('original_sql_for_edit', context.user_data.get('last_sql'))
+        source = context.user_data.get('last_source', 'unknown')
         
         if not question or not original_sql:
             await update.message.reply_text("❌ Ошибка: данные вопроса не найдены")
@@ -361,7 +362,7 @@ async def handle_sql_correction(update: Update, context: ContextTypes.DEFAULT_TY
         # Проверяем команду отмены
         if corrected_sql.lower() in ['/cancel', 'отмена', 'cancel']:
             await update.message.reply_text("❌ Редактирование отменено")
-            context.user_data.clear()
+            context.user_data.pop('original_sql_for_edit', None)
             return
         
         # Проверяем что это похоже на SQL
@@ -381,29 +382,57 @@ async def handle_sql_correction(update: Update, context: ContextTypes.DEFAULT_TY
             await update.message.reply_text("❌ Конструктор не доступен")
             return
         
-        # Обрабатываем исправление через конструктор
-        logger.info(f"📤 Отправляю исправление в конструктор...")
-        result = await constructor.process_correction(
-            question=question,
-            original_sql=original_sql,
-            corrected_sql=corrected_sql,
-            user_id=user_id
-        )
+        # Если SQL был изменен - учимся на исправлении
+        if original_sql.strip() != corrected_sql.strip():
+            logger.info(f"🔧 SQL изменен, сохраняем исправление...")
+            
+            # Сохраняем исправление в конструктор
+            if hasattr(constructor, 'learn_from_correction'):
+                await constructor.learn_from_correction(
+                    question=question,
+                    llm_sql=original_sql,
+                    corrected_sql=corrected_sql,
+                    user_feedback="исправлено пользователем"
+                )
+                logger.info(f"💾 Исправление сохранено в конструктор")
+            
+            # Обновляем последний SQL
+            context.user_data['last_sql'] = corrected_sql
+            
+            # Выполняем исправленный SQL
+            execution_result = ""
+            if hasattr(constructor, 'db') and constructor.db:
+                try:
+                    db_result = await constructor.db.execute_query(corrected_sql)
+                    if isinstance(db_result, list):
+                        execution_result = f"Найдено {len(db_result)} записей"
+                    else:
+                        execution_result = str(db_result)
+                except Exception as db_error:
+                    execution_result = f"Ошибка выполнения: {str(db_error)}"
+            else:
+                execution_result = "✅ SQL принят"
+            
+            # Показываем результат
+            await update.message.reply_text(
+                f"✅ **Исправление применено!**\n\n"
+                f"**Исправленный SQL:**\n"
+                f"```sql\n{corrected_sql}\n```\n\n"
+                f"**Результат:** {execution_result}\n\n"
+                f"Система запомнила это исправление.",
+                parse_mode=ParseMode.MARKDOWN
+            )
+            
+        else:
+            # SQL не изменился
+            await update.message.reply_text(
+                "⚠️ **SQL не изменен**\n\n"
+                "Вы отправили тот же самый запрос.",
+                parse_mode=ParseMode.MARKDOWN
+            )
         
-        logger.info(f"📥 Результат исправления: {result}")
-        
-        # Показываем результат
-        await update.message.reply_text(
-            f"✅ **Исправление применено!**\n\n"
-            f"**Исправленный SQL:**\n"
-            f"```sql\n{corrected_sql}\n```\n\n"
-            f"**Результат выполнения:** {result}\n\n"
-            f"Система запомнила это исправление.",
-            parse_mode=ParseMode.MARKDOWN
-        )
-        
-        # Очищаем состояние
-        context.user_data.clear()
+        # Очищаем временные данные
+        context.user_data.pop('original_sql_for_edit', None)
         
     except Exception as e:
         logger.error(f"Ошибка обработки исправления: {e}")
@@ -412,90 +441,46 @@ async def handle_sql_correction(update: Update, context: ContextTypes.DEFAULT_TY
 
 
 async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик кнопок с обучением системы"""
     query = update.callback_query
+    await query.answer()
+    
     data = query.data
-    user_id = query.from_user.id
-    session = USER_SESSIONS.get(user_id, {})
+    logger.info(f"Callback query: {data}")
     
-    # ВАЖНО: Проверяем источник SQL
-    sql_source = session.get('source', 'unknown')
-    
-    if data == 'correct':
-        # Кнопка "Верно"
-        if sql_source == 'llm':
-            # LLM-ответ подтверждён → ТОЛЬКО в кэш
-            await save_to_pattern_cache(
-                user_query=session['original_query'],
-                sql=session['sql'],
-                source='llm_confirmed'
-            )
-            await query.edit_message_text("✅ SQL верный! Сохранено в кэш.")
-        else:
-            # Не LLM-ответ → просто выполняем
-            await query.edit_message_text("Выполняю запрос...")
-        
-        # Выполняем SQL
-        await execute_sql(session['sql'])
-    
-    elif data == 'incorrect':
-        # Кнопка "Исправить" → ТОЛЬКО для LLM-ответов
-        if sql_source != 'llm':
-            await query.edit_message_text(
-                "⚠️ Исправлять можно только LLM-запросы.\n"
-                "Этот запрос из кэша или сгенерирован автоматически."
-            )
-            return
-        
-        # Просим исправленный SQL
-        await query.edit_message_text(
-            f"📝 **Исправьте SQL запрос:**\n\n"
-            f"`{session['sql']}`\n\n"
-            f"Введите исправленный вариант:",
-            parse_mode='Markdown'
-        )
-        USER_STATES[user_id] = 'waiting_llm_correction'
-    
-    elif data == 'submit_correction':
-        # Получили исправление от пользователя
-        if USER_STATES.get(user_id) != 'waiting_llm_correction':
-            return
-        
-        corrected_sql = update.message.text
-        
-        # Двойная проверка: это ДОЛЖЕН быть LLM-ответ
-        if session.get('source') == 'llm':
-            # 1. Сохраняем исправление в кэш
-            await save_to_pattern_cache(
-                user_query=session['original_query'],
-                sql=corrected_sql,
-                source='llm_corrected',
-                original_llm_sql=session['sql']
-            )
+    try:
+        if data == "confirm_success":
+            # ✅ Пользователь подтвердил, что SQL правильный
+            await handle_confirm_success(query, context)
             
-            # 2. ✅ ТОЛЬКО ЗДЕСЬ: добавляем в промпт
-            await add_correction_to_prompt(
-                user_query=session['original_query'],
-                wrong_llm_sql=session['sql'],
-                correct_user_sql=corrected_sql,
-                user_id=user_id
-            )
+        elif data == "edit_sql":
+            # ✏️ Пользователь хочет исправить SQL
+            await handle_edit_sql(query, context)
             
-            await update.message.reply_text(
-                "✅ **Исправление сохранено!**\n\n"
-                "• Добавлено в кэш паттернов\n"
-                "• Добавлено правило в промпт LLM"
-            )
+        elif data == "rephrase":
+            # 🔄 Пользователь хочет перефразировать вопрос
+            await handle_rephrase(query, context)
+            
+        elif data == "save_correction":
+            # 💾 Пользователь отправил исправленный SQL
+            await handle_save_correction(query, context)
+            
+        elif data == "cancel_correction":
+            # ❌ Отмена редактирования
+            context.user_data.pop('waiting_for_correction', None)
+            await query.edit_message_text("❌ Редактирование отменено")
+            
         else:
-            # На всякий случай: если это не LLM
-            await update.message.reply_text(
-                "❌ Ошибка: можно исправлять только LLM-запросы."
-            )
-        
-        # Сбрасываем состояние
-        USER_STATES[user_id] = None
+            logger.warning(f"Unknown callback data: {data}")
+            await query.message.reply_text("❌ Неизвестное действие")
+            
+    except Exception as e:
+        logger.error(f"Error in callback handler: {e}", exc_info=True)
+        await query.message.reply_text(f"❌ Ошибка: {str(e)}")
+
 
 async def handle_confirm_success(query, context):
-    """Кнопка '✅ Подтвердить'"""
+    """✅ Кнопка 'Подтвердить' - система учится на успешном запросе"""
     constructor = get_constructor()
     
     if not constructor:
@@ -505,34 +490,75 @@ async def handle_confirm_success(query, context):
     # Получаем сохраненные данные
     question = context.user_data.get('last_question')
     sql = context.user_data.get('last_sql')
+    source = context.user_data.get('last_source', 'unknown')
     
     if not question or not sql:
         await query.edit_message_text("❌ Данные не найдены")
         return
     
     try:
-        # Сохраняем как успешный паттерн
+        # 1. Сохраняем в конструктор как успешный паттерн
         if hasattr(constructor, 'learn_from_success'):
             await constructor.learn_from_success(question, sql)
+            logger.info(f"✅ Learned from success: '{question[:50]}...'")
+        
+        # 2. Если это был LLM ответ - дополнительно сохраняем
+        if source == 'llm':
+            if hasattr(constructor, 'learn_new_pattern'):
+                await constructor.learn_new_pattern(question, sql)
+                logger.info(f"💾 Saved LLM pattern to constructor")
+        
+        # 3. Обновляем статистику
+        if hasattr(constructor, 'stats'):
+            constructor.stats['confirmed_patterns'] = constructor.stats.get('confirmed_patterns', 0) + 1
         
         await query.edit_message_text(
-            "✅ **Запрос подтвержден!** Система запомнила этот паттерн.",
+            "✅ **Запрос подтвержден!**\n\n"
+            f"• Паттерн сохранен для будущих запросов\n"
+            f"• При следующем запросе ответ будет мгновенным\n"
+            f"• Система стала умнее на 1 шаблон 😊",
             parse_mode=ParseMode.MARKDOWN
         )
         
     except Exception as e:
+        logger.error(f"Error confirming: {e}")
         await query.edit_message_text(f"❌ Ошибка сохранения: {str(e)}")
 
+
 async def handle_edit_sql(query, context):
-    """Кнопка '✏️ Исправить SQL'"""
-    context.user_data['waiting_for_correction'] = True
-    
-    await query.edit_message_text(
-        "✏️ **Режим редактирования**\n\n"
-        "Пришлите исправленный SQL запрос.\n"
-        "Используйте /cancel для отмены.",
-        parse_mode=ParseMode.MARKDOWN
-    )
+    """✏️ Кнопка 'Исправить SQL'"""
+    try:
+        # Получаем сохраненные данные
+        original_sql = context.user_data.get('last_sql', '')
+        question = context.user_data.get('last_question', '')
+        source = context.user_data.get('last_source', 'unknown')
+        
+        if not original_sql:
+            await query.edit_message_text("❌ Не найден SQL для редактирования")
+            return
+        
+        logger.info(f"Starting SQL edit for: '{question[:50]}...'")
+        
+        # Активируем режим редактирования
+        context.user_data['waiting_for_correction'] = True
+        
+        # Сохраняем оригинальный SQL отдельно
+        context.user_data['original_sql_for_edit'] = original_sql
+        
+        await query.edit_message_text(
+            "✏️ **Режим редактирования SQL**\n\n"
+            f"**Вопрос:** {question}\n\n"
+            f"**Текущий SQL:**\n"
+            f"```sql\n{original_sql}\n```\n\n"
+            "**Отправьте исправленный SQL запрос.**\n"
+            "Используйте /cancel для отмены.\n\n"
+            f"_Источник: {source}_",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        
+    except Exception as e:
+        logger.error(f"Error in handle_edit_sql: {e}")
+        await query.edit_message_text(f"❌ Ошибка: {str(e)}")
 
 async def handle_rephrase(query, context):
     """Кнопка '🔄 Перефразировать вопрос'"""
